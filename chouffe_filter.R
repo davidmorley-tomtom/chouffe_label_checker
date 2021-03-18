@@ -7,7 +7,7 @@ require(mapview)
 require(rgeos)
 require(psych)
 
-setwd("C:/Users/morleyd/OneDrive - TomTom/Desktop")
+setwd("C:/Users/morleyd/OneDrive - TomTom/Chouffe/Chouffe_label_checker")
 source("chouffe_filter_pgfunctions.R")
 source("chouffe_filter_Rfunctions.R")
 
@@ -16,9 +16,6 @@ source("chouffe_filter_Rfunctions.R")
 ## PG Conn to validation results
 ################################
 
-#to.check <- "subsets.train_geom"
-#labels <- "hackaton.labels"
-#full.osm <- "hackaton.atlas"
 
 user <-     "dba_admin@psql-amf-matcher-dev"
 password <- ""
@@ -27,6 +24,7 @@ port <-     5432
 database <- "labels"
 schema <-   "labeling_week_20210215_nld"
 
+task.list <- "nld_validation_tasks"
 to.check <- "nld_validation_results"
 full.atlas <- "nld_atlas"
 full.mds <- "nld_mds"
@@ -38,11 +36,10 @@ con <- dbConnect(RPostgres::Postgres(), dbname = database, host = host, port = p
 create.custom.pg.funcs(con)
 
 ################################
-## Stupid Matcher
+## Candidate matches
 ################################
 
-
-## 1) For each mds case in the validation table, get the nearby osm roads that could be matches
+## For each mds case in the validation table, get the nearby osm roads that could be matches
 execute.pg(con, "drop table if exists situation")
 execute.pg(con, sprintf(
   "create temp table situation as
@@ -55,8 +52,11 @@ execute.pg(con, sprintf(
 execute.pg(con, "create index situation_indx1 on situation using gist(mds_geom)")
 execute.pg(con, "create index situation_indx2 on situation using gist(atlas_geom)")
 
+################################
+## Stupid Matcher
+################################
 
-## 2) Get the features of the stupid matcher
+## Get the features of the stupid matcher
 execute.pg(con, "drop table if exists stupid_results")
 execute.pg(con, 
   "create temp table stupid_results as
@@ -83,26 +83,26 @@ execute.pg(con,
       from lgths")
 
 
-## 3) Join back results of validation, including 'no match' cases from the situation
+## 2) Join back results of validation, including 'no match' cases from the situation
 execute.pg(con, "drop table if exists valid_to_check")
 execute.pg(con, sprintf("create temp table valid_to_check as 
                        select distinct a.*, coalesce(b.label, 'NO MATCH') as human from stupid_results a left join %s b
                        on a.atlas_id = b.atlas_id and a.mds_id = b.mds_id", to.check))
 
-## 4) Put back into R
+## 3) Put back into R
 d.full <- st_read(con, query = "select * from valid_to_check where human != 'NOT SURE'")
 d.full$id <- 1:nrow(d.full) ## add a unique key
 d.full[which(d.full$human == "NO MATCH"), "human"] <- "NOMATCH" ## R doesn't like the space
 
-head(d.full)
-summary(d.full)
-hist(d.full$azi_diff)
-hist(d.full$intr)
-hist(d.full$min_sep)
-hist(d.full$common)
+# head(d.full)
+# summary(d.full)
+# hist(d.full$azi_diff)
+# hist(d.full$intr)
+# hist(d.full$min_sep)
+# hist(d.full$common)
 
 d <- data.frame(d.full)
-d <- data.frame(d.full[1:2000,])
+#d <- data.frame(d.full[1:2000,])
 
 
 #############################
@@ -110,7 +110,8 @@ d <- data.frame(d.full[1:2000,])
 #############################
 
 ## human: is MATCH, NOMATCH as labelled by a person
-## predicted: is MATCH, NOMATCH as predicted by the model
+## MATCH: is probability of match perdicted by model
+## NOMATCH: is probability of no match predicted by model
 
 ## 1) SVM on the full dataset
 svm.A <- fit.tuned.svm(d)
@@ -130,23 +131,23 @@ get.metrics(svm.B, d.non.sv)
 pred.B <- predict(svm.B, type = "prob", newdata = d.sv)
 get.metrics(svm.B, d.sv)
 
-## 5) Sort SV partition on probablity of misclassification
+## 5) Sort SV partition on probablity of misclassification, biggest errors first
 miss.class <- cbind(pred.B, d.sv)
 miss.class[, c(1, 2)] <- lapply(miss.class[, c(1, 2)], round, 4)
-
-FP <- miss.class %>% filter(human == "MATCH") %>% filter(MATCH < 0.5) %>% arrange(desc(NOMATCH))
-FN <- miss.class %>% filter(human == "NOMATCH") %>% filter(MATCH >= 0.5) %>% arrange(desc(MATCH))
-
 
 
 #############################
 ## Explore results
 #############################
+
+## Choose either false positives or negatives
+FP <- miss.class %>% filter(human == "MATCH") %>% filter(MATCH < 0.5) %>% arrange(desc(NOMATCH))
+FN <- miss.class %>% filter(human == "NOMATCH") %>% filter(MATCH >= 0.5) %>% arrange(desc(MATCH))
 a <- FP
 a <- FN
-a$rid <- 1:nrow(a)
 
-r <- 1
+a$rid <- 1:nrow(a)
+r <- 1 ## row number to look at (biggest errors should be nearer top of table)
 
 mapview(SpatialLinesDataFrame(rbind(
   readWKT(st_as_text(a[r, "atlas_geom"]), p4s = CRS("+init=epsg:4326")), 
@@ -164,11 +165,19 @@ r <- r + 1
 
 prob.cutoff <- 0.99
 
-xxx <- rbind(
+to.revisit <- rbind(
   miss.class %>% filter(human == "MATCH") %>% filter(NOMATCH > prob.cutoff),
   miss.class %>% filter(human == "NOMATCH") %>% filter(MATCH > prob.cutoff)) %>% select(MATCH, human, mds_id, atlas_id)
+dbWriteTable(con, "label_errors", to.revisit, row.names=FALSE, overwrite=TRUE, temporary = TRUE)
 
-head(xxx)
+
+## RESULTS
+## This table 'tasks_to_check' is written to the schema containing the validation tasks
+execute.pg(con, sprintf("
+          create table tasks_to_check as
+          select distinct b.task_id, b.task_group
+          from label_errors a inner join %s b
+          on a.mds_id = b.mds_id", task.list))
 
 dbDisconnect(con)
 
