@@ -21,7 +21,7 @@ source("chouffe_filter_Rfunctions.R")
 #full.osm <- "hackaton.atlas"
 
 user <-     "dba_admin@psql-amf-matcher-dev"
-password <- "xA7Q4MYqGhfZZ45"
+password <- ""
 host <-     "psql-amf-matcher-dev.postgres.database.azure.com"
 port <-     5432
 database <- "labels"
