@@ -17,5 +17,5 @@ Steps:
  5. Split the full dataset into two new sets: those that are support vectors and those that are not
  6. Fit a new SVM on only the non-support vectors (a proxy for a perfect training set)
  7. Use this new model to predict the support vector set
- 8. Misclassifications where humans and SVM model can now be ranked according to probability
+ 8. Misclassifications where humans and SVM model disagree can now be ranked according to probability
  
