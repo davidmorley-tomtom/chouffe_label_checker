@@ -161,7 +161,6 @@ mapview(SpatialLinesDataFrame(rbind(
 ), data = data.frame(z = c(1, 2)), match.ID = FALSE), lwd = 4, zcol = "z",
 legend = FALSE, map.types = c("OpenStreetMap.Mapnik", "Esri.WorldImagery"))
 a[r, ] %>% select(-(c("mds_geom", "atlas_geom")))
-#d %>% filter(id == a[r, "id"])
 r <- r + 1
 
 
@@ -180,6 +179,7 @@ dbWriteTable(con, "label_errors", to.revisit, row.names=FALSE, overwrite=TRUE, t
 
 ## RESULTS
 ## This table 'tasks_to_check' is written to the schema containing the validation tasks
+execute.pg(con, "drop table if exists tasks_to_check")
 execute.pg(con, sprintf("
           create table tasks_to_check as
           select distinct b.task_id, b.task_group
