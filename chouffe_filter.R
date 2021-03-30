@@ -17,12 +17,12 @@ source("chouffe_filter_Rfunctions.R")
 ################################
 
 
-user <-     "dba_admin@psql-amf-matcher-dev"
-password <- ""
+user <-     "matcher@psql-amf-matcher-dev"
+password <- "xxxxxxxx"
 host <-     "psql-amf-matcher-dev.postgres.database.azure.com"
 port <-     5432
 database <- "labels"
-schema <-   "labeling_week_20210215_nld"
+schema <-   "test_set_20210317_nld"
 
 task.list <- "nld_validation_tasks"
 to.check <- "nld_validation_results"
@@ -43,8 +43,10 @@ create.custom.pg.funcs(con)
 execute.pg(con, "drop table if exists situation")
 execute.pg(con, sprintf(
   "create temp table situation as
-   select c.mds_id, d.id as atlas_id, c.mds_geom, d.geom as atlas_geom from
-  	(select a.mds_id, b.geom as mds_geom 
+   select c.mds_id, d.id as atlas_id, c.mds_geom, d.geom as atlas_geom, d.\"highwayType\" as highway,
+   abs(c.frc - d.\"FRC\") as frc_diff
+    from
+  	(select a.mds_id, b.geom as mds_geom, b.frc
   	from %s a left join %s b
   	on a.mds_id = b.id) c
   inner join %s d 
@@ -62,14 +64,14 @@ execute.pg(con,
   "create temp table stupid_results as
     with lgths as (
       	select 
-      		mds_geom, atlas_geom, mds_id, atlas_id,
+      		mds_geom, atlas_geom, mds_id, atlas_id, frc_diff, highway,
       		coalesce(common_lines(atlas_geom, mds_geom, 50), atlas_geom) as atlas_intr, 
       		coalesce(common_lines(mds_geom, atlas_geom, 50), mds_geom) as mds_intr
       	from 
       	situation
       )
       select 
-      	mds_geom, atlas_geom, mds_id, atlas_id,
+      	mds_geom, atlas_geom, mds_id, atlas_id, frc_diff, highway,
       	log((st_distance(mds_intr, atlas_intr) / 0.00001) + 1) as min_sep,
       	log((coalesce(
       		 greatest(
@@ -86,8 +88,10 @@ execute.pg(con,
 ## 2) Join back results of validation, including 'no match' cases from the situation
 execute.pg(con, "drop table if exists valid_to_check")
 execute.pg(con, sprintf("create temp table valid_to_check as 
-                       select distinct a.*, coalesce(b.label, 'NO MATCH') as human from stupid_results a left join %s b
+                       select distinct a.*, coalesce(b.label, 'NO MATCH') as human 
+                       from stupid_results a left join %s b
                        on a.atlas_id = b.atlas_id and a.mds_id = b.mds_id", to.check))
+
 
 ## 3) Put back into R
 d.full <- st_read(con, query = "select * from valid_to_check where human != 'NOT SURE'")
@@ -100,8 +104,11 @@ d.full[which(d.full$human == "NO MATCH"), "human"] <- "NOMATCH" ## R doesn't lik
 # hist(d.full$intr)
 # hist(d.full$min_sep)
 # hist(d.full$common)
+# hist(d.full$frc_diff)
 
-d <- data.frame(d.full)
+ 
+d <- data.frame(d.full) %>% filter(highway != "cycleway")
+#d <- data.frame(d.full)
 #d <- data.frame(d.full[1:2000,])
 
 
@@ -146,14 +153,13 @@ FN <- miss.class %>% filter(human == "NOMATCH") %>% filter(MATCH >= 0.5) %>% arr
 a <- FP
 a <- FN
 
-a$rid <- 1:nrow(a)
 r <- 1 ## row number to look at (biggest errors should be nearer top of table)
 
 mapview(SpatialLinesDataFrame(rbind(
-  readWKT(st_as_text(a[r, "atlas_geom"]), p4s = CRS("+init=epsg:4326")), 
-  readWKT(st_as_text(a[r, "mds_geom"]), p4s = CRS("+init=epsg:4326"))
+  readWKT(st_as_text(a[r, "atlas_geom"]), p4s = CRS("EPSG:4326")), 
+  readWKT(st_as_text(a[r, "mds_geom"]), p4s = CRS("EPSG:4326"))
 ), data = data.frame(z = c(1, 2)), match.ID = FALSE), lwd = 4, zcol = "z",
-legend = FALSE, map.types = c("Esri.WorldImagery", "OpenStreetMap.Mapnik"))
+legend = FALSE, map.types = c("OpenStreetMap.Mapnik", "Esri.WorldImagery"))
 a[r, ] %>% select(-(c("mds_geom", "atlas_geom")))
 #d %>% filter(id == a[r, "id"])
 r <- r + 1
@@ -168,7 +174,8 @@ prob.cutoff <- 0.99
 to.revisit <- rbind(
   miss.class %>% filter(human == "MATCH") %>% filter(NOMATCH > prob.cutoff),
   miss.class %>% filter(human == "NOMATCH") %>% filter(MATCH > prob.cutoff)) %>% select(MATCH, human, mds_id, atlas_id)
-dbWriteTable(con, "label_errors", to.revisit, row.names=FALSE, overwrite=TRUE, temporary = TRUE)
+
+dbWriteTable(con, "label_errors", to.revisit, row.names=FALSE, overwrite=TRUE, temporary = FALSE)
 
 
 ## RESULTS

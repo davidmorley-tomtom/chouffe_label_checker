@@ -9,7 +9,7 @@ execute.pg <- function(con, sql) {
 fit.tuned.svm <- function(x) {
   x$human <- as.factor(x$human)
   x <- x %>% mutate(human = factor(human, labels = make.names(levels(human))))
-  train(human ~ azi_diff + common + intr + min_sep,
+  train(human ~ azi_diff + common + intr + min_sep + frc_diff,
         data = x, 
         verbose = TRUE,
         method = "svmLinear",
